@@ -39,7 +39,7 @@ int main(int argc, char **argv)
 
     /* game start-up: reset, activate, colour */
     cmd(&p, "R", 2, rep, &has);
-    CHECK(has && rep[0] == 'R' && rep[1] == 0x02 && rep[2] == 0x1b, "R reply");
+    CHECK(has && rep[0] == 'R' && rep[1] == 0x02 && rep[2] == 0x18, "R reply");
     cmd(&p, "A\x01", 2, rep, &has);
     CHECK(has && rep[0] == 'A' && rep[1] == 1 && rep[2] == 0xFF && rep[3] == 0x77, "A reply");
     cmd(&p, "C\x10\x20\x30", 4, rep, &has);
