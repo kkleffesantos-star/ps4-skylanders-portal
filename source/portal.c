@@ -27,8 +27,11 @@ uint16_t sky_variant(const uint8_t *d) { return (uint16_t)(d[0x1C] | (d[0x1D] <<
 void portal_init(Portal *p)
 {
     memset(p, 0, sizeof(*p));
-    p->portal_id[0] = 0x02; /* 'R' reply used by shadPS4 (PS4 emulator) and Dolphin */
-    p->portal_id[1] = 0x1b;
+    /* 'R' reply = portal type. Trap Team only accepts the Traptanium Portal (02 18); the older
+     * Swap Force/Imaginators portal (02 1b) makes it say "Can't find the TRAPTANIUM PORTAL".
+     * RPCS3 uses the Traptanium id for every game, so it is the default here. */
+    p->portal_id[0] = 0x02;
+    p->portal_id[1] = 0x18;
 }
 
 int portal_present(const Portal *p, int slot)
