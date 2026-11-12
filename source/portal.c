@@ -82,7 +82,7 @@ void portal_status(Portal *p, uint8_t *reply)
     reply[3] = (uint8_t)(st >> 16);
     reply[4] = (uint8_t)(st >> 24);
     reply[5] = p->counter++;
-    reply[6] = p->activated ? 1 : 0;
+    reply[6] = (p->activated || p->opt_status_active) ? 1 : 0;
 }
 
 int portal_command(Portal *p, const uint8_t *buf, int len, uint8_t *reply)
@@ -98,7 +98,10 @@ int portal_command(Portal *p, const uint8_t *buf, int len, uint8_t *reply)
         reply[1] = len > 1 ? buf[1] : 1;
         reply[2] = 0xFF;
         reply[3] = 0x77;
-        activate(p);
+        if (p->opt_a_arg && len > 1 && buf[1] == 0)
+            p->activated = 0; /* 'A' 00 = off */
+        else
+            activate(p);
         return 1;
     case 'C': /* LED colour */
         if (len >= 4) {

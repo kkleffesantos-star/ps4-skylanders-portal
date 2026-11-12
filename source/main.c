@@ -463,7 +463,7 @@ static int g_ntrk;
 /* things the worker must complete: control/interrupt-OUT transfers (with the command bytes they carried) */
 typedef struct { uint64_t t; int actual; int is_cmd; int cmdlen; uint8_t d[32]; } OutEnt;
 typedef struct { uint8_t d[32]; } Resp;
-static OutEnt g_oq[64] IN_DATA;
+static OutEnt g_oq[16] IN_DATA;
 static int g_noq;
 static Resp g_resp[32] IN_DATA; /* replies waiting for the interrupt IN endpoint */
 static int g_nresp;
@@ -508,11 +508,37 @@ static void next_report(uint8_t *out)
     }
 }
 
+/* tweaks.txt (optional, in DIR_MAIN): one "name=1" per line, for trying fixes without rebuilding.
+ *   quiet=1          no status reports until the game sends 'A' (a real portal is silent before that)
+ *   a_arg=1          'A' 00 turns the portal off, 'A' 01 turns it on
+ *   status_active=1  byte 6 of every status report is 1 */
+static void load_tweaks(void)
+{
+    char b[256];
+    int n = read_file(DIR_MAIN "/tweaks.txt", b, sizeof(b) - 1), i = 0;
+    if (n <= 0) {
+        logf_("tweaks: none (tweaks.txt not found)");
+        return;
+    }
+    b[n] = 0;
+    while (i < n) {
+        char *line = b + i;
+        int j = i;
+        while (j < n && b[j] != '\n' && b[j] != '\r') j++;
+        b[j] = 0;
+        i = j + 1;
+        if (strncmp(line, "quiet=1", 7) == 0) g_force_status = 0;
+        else if (strncmp(line, "a_arg=1", 7) == 0) g_portal.opt_a_arg = 1;
+        else if (strncmp(line, "status_active=1", 15) == 0) g_portal.opt_status_active = 1;
+    }
+    logf_("tweaks: quiet=%d a_arg=%d status_active=%d", !g_force_status, g_portal.opt_a_arg, g_portal.opt_status_active);
+}
+
 static void note_cmd(const uint8_t *d, int len)
 {
     uint8_t c = len > 0 ? d[0] & 0x7F : 0;
     uint32_t k = ++g_cmd_seen[c];
-    if (k <= 4 || k == 100 || k == 1000)
+    if (k <= 12 || k == 100 || k == 1000)
         logf_("cmd '%c' len %d: %02x %02x %02x %02x %02x %02x %02x  [#%u]", (c >= 32 && c < 127) ? c : '?', len,
               len > 0 ? d[0] : 0, len > 1 ? d[1] : 0, len > 2 ? d[2] : 0, len > 3 ? d[3] : 0, len > 4 ? d[4] : 0,
               len > 5 ? d[5] : 0, len > 6 ? d[6] : 0, k);
@@ -611,7 +637,7 @@ static uint64_t handle_submit(uint64_t t)
     }
     lock();
     g_trk[g_ntrk++ % NTRK] = t;
-    if (g_noq < 64)
+    if (g_noq < 16)
         g_oq[g_noq++] = e;
     unlock();
     return 0;
@@ -931,7 +957,7 @@ static void finish_transfer(uint64_t t, int status, int actual)
 
 /* completes at most one cancelled, one OUT/control and one IN transfer. pace = minimum worker ticks between
  * status reports. Returns how many transfers were completed. */
-static int deliver(uint32_t pace, int do_in)
+static int deliver(uint32_t pace)
 {
     static uint8_t last_st[4];
     static uint32_t nst;
@@ -954,21 +980,18 @@ static int deliver(uint32_t pace, int do_in)
                 break;
             }
     }
+    if (g_noq > 0) {
+        e = g_oq[0];
+        memmove(g_oq, g_oq + 1, sizeof(OutEnt) * (g_noq - 1));
+        g_noq--;
+        have_out = 1;
+    }
     unlock();
     if (have_cancel) {
         finish_transfer(tc, 3, 0);
         done++;
     }
-    /* complete ALL waiting OUT/control transfers. Trap Team speaker sound arrives in bursts; completing only
-     * one per call let the queue overflow, so the game waited forever (slow game, portal not loading). */
-    for (;;) {
-        lock();
-        if (g_noq == 0) { unlock(); break; }
-        e = g_oq[0];
-        memmove(g_oq, g_oq + 1, sizeof(OutEnt) * (g_noq - 1));
-        g_noq--;
-        unlock();
-        have_out = 1;
+    if (have_out) {
         if (e.is_cmd) {
             note_cmd(e.d, e.cmdlen);
             lock();
@@ -978,9 +1001,6 @@ static int deliver(uint32_t pace, int do_in)
         finish_transfer(e.t, 0, e.actual);
         done++;
     }
-    (void)have_out;
-    if (!do_in)
-        return done;
 
     lock();
     if (g_ninq > 0 && (g_nresp > 0 || ((g_portal.activated || g_force_status) && g_portal.tick - g_last_status >= pace))) {
@@ -1002,8 +1022,8 @@ static int deliver(uint32_t pace, int do_in)
             if (++nst <= 60)
                 logf_("status to game: %02x %02x %02x %02x (active %d)", rep[1], rep[2], rep[3], rep[4], rep[6]);
         } else if (rep[0] != 'S') {
-            static uint32_t nrep;
-            if (++nrep <= 40)
+            static uint32_t nrep, nrep_r;
+            if (rep[0] == 'R' ? (++nrep_r <= 6) : (++nrep <= 60))
                 logf_("reply to game: %c %02x %02x %02x %02x %02x", rep[0], rep[1], rep[2], rep[3], rep[4], rep[5]);
         }
         if ((uint64_t)buf > 0x10000 && n > 0)
@@ -1029,7 +1049,8 @@ static void *worker_thread(void *arg)
         for (s = 0; s < SKY_SLOTS; s++)
             if (g_portal.slot[s].dirty && g_portal.tick - g_portal.slot[s].dirty_tick > 500) /* ~1 s quiet */
                 flush_slot(s);
-        deliver(4, !he_mode()); /* OUT/cancel always; IN (status) only when the game is not using HandleEvents */
+        if (!he_mode())
+            deliver(4); /* status every ~8 ms */
     }
     return NULL;
 }
@@ -1042,10 +1063,10 @@ static uint64_t handle_events_hook(void)
         logf_("game calls HandleEvents: completing portal transfers on the game's thread from now on");
     g_he_tick = g_portal.tick;
     g_he_seen = 1;
-    if (deliver(1, 1))
+    if (deliver(1))
         return 0;
-    sceKernelUsleep(100); /* nothing ready yet: very short wait (1000 made Trap Team slow) */
-    deliver(1, 1);
+    sceKernelUsleep(1000); /* nothing ready yet: wait a moment, like a short USB event wait */
+    deliver(1);
     return 0;
 }
 
@@ -1576,6 +1597,7 @@ attr_public int32_t plugin_load(int32_t argc, const char *argv[])
     logf_("skylanders_portal " PLUGIN_VERSION_STR " loaded");
 
     portal_init(&g_portal);
+    load_tweaks();
     init_fake();
     g_pool = (char *)malloc(POOL_SIZE);
     g_lib_off = (int *)malloc(sizeof(int) * LIB_MAX);

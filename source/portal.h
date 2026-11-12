@@ -37,6 +37,9 @@ typedef struct {
     uint8_t portal_id[2];     /* bytes 1..2 of the 'R' reply */
     uint32_t tick;
     uint32_t cmds;            /* number of commands seen (0 = game has not talked to us yet) */
+    /* experimental switches (tweaks.txt), all 0 = behaviour of v0.1.6 */
+    uint8_t opt_a_arg;        /* 'A' 00 turns the portal off instead of on */
+    uint8_t opt_status_active;/* byte 6 of every 'S' report is 1, even before 'A' */
 } Portal;
 
 void portal_init(Portal *p);
